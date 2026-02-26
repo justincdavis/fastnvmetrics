@@ -1,0 +1,28 @@
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.so
+*.o
+*.a
+
+# scikit-build-core
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+build.ninja
+.ninja_*
+.cmake/
+CMakeInit.txt
+CTestTestfile.cmake
+_deps/
+.skbuild-info.json
+libnanobind-static.a
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Planning files
+plans/
