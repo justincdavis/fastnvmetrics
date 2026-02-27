@@ -27,6 +27,7 @@ NB_MODULE(_ext, m) {
         .def_ro("num_cpu_cores", &BoardConfig::num_cpu_cores)
         .def_ro("gpu_load_path", &BoardConfig::gpu_load_path)
         .def_ro("emc_actmon_path", &BoardConfig::emc_actmon_path)
+        .def_ro("emc_clk_rate_path", &BoardConfig::emc_clk_rate_path)
         .def_ro("power_rails", &BoardConfig::power_rails)
         .def_ro("thermal_zones", &BoardConfig::thermal_zones);
 

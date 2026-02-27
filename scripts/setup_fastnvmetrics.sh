@@ -9,6 +9,7 @@
 #   1. Makes /sys/kernel/debug traversable (o+rx)
 #   2. Makes /sys/kernel/debug/cactmon/ traversable (o+rx)
 #   3. Makes /sys/kernel/debug/cactmon/mc_all readable (o+r)
+#   4. Makes /sys/kernel/debug/clk/emc/ traversable (o+rx) for EMC clock rate
 #
 # This allows fastnvmetrics to read EMC (memory controller) utilization
 # without running the entire profiler as root.
@@ -55,6 +56,16 @@ if [ -f "$MC_ALL" ]; then
 else
     echo "  [SKIP] $MC_ALL not found"
     exit 1
+fi
+
+# Step 4: Make clk/emc directory traversable (for EMC clock rate / DVFS)
+CLK_DIR="$DEBUGFS/clk"
+CLK_EMC="$CLK_DIR/emc"
+if [ -d "$CLK_EMC" ]; then
+    chmod o+rx "$CLK_DIR" "$CLK_EMC"
+    echo "  [OK] $CLK_EMC → o+rx"
+else
+    echo "  [SKIP] $CLK_EMC not found (EMC DVFS tracking unavailable)"
 fi
 
 echo ""

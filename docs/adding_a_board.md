@@ -243,7 +243,7 @@ sudo ls /sys/kernel/debug/cactmon/
 
 Expected:
 ```
-mc_all
+mc_all  sample_period_usec
 ```
 
 ### 6.2 Read EMC Utilization
@@ -252,7 +252,14 @@ mc_all
 sudo cat /sys/kernel/debug/cactmon/mc_all
 ```
 
-Returns an integer (utilization metric).
+Returns a raw activity counter (NOT a percentage). To compute utilization:
+```
+util = mc_all / (emc_clk_rate * sample_period_usec / 1e6) * 100%
+```
+
+The EMC clock rate is at `/sys/kernel/debug/clk/emc/clk_rate` (Hz) and the
+sample period at `/sys/kernel/debug/cactmon/sample_period_usec` (microseconds).
+The engine reads both automatically.
 
 ### 6.3 Set Up Non-Root Access
 
@@ -262,8 +269,9 @@ The `setup_fastnvmetrics.sh` script handles this:
 sudo bash scripts/setup_fastnvmetrics.sh
 ```
 
-This sets `o+rx` on `/sys/kernel/debug` and `/sys/kernel/debug/cactmon`,
-and `o+r` on `mc_all`. Permissions reset on reboot.
+This sets `o+rx` on `/sys/kernel/debug`, `/sys/kernel/debug/cactmon`,
+and `/sys/kernel/debug/clk/emc`, plus `o+r` on `mc_all`. Permissions reset
+on reboot.
 
 ### 6.4 If cactmon is Not Available
 
@@ -274,8 +282,8 @@ module. Try loading it:
 sudo modprobe tegra_cactmon_mc_all
 ```
 
-If unavailable, set `emc_actmon_path` to `""` in the config — the engine
-will skip EMC sampling gracefully (returning -1.0).
+If unavailable, set `emc_actmon_path` and `emc_clk_rate_path` to `""` in
+the config — the engine will skip EMC sampling gracefully (returning -1.0).
 
 The standard debugfs path for all Orin variants is:
 ```
@@ -383,8 +391,9 @@ static BoardConfig make_orin_nano() {
     BoardConfig c;
     c.board_name    = "orin_nano";
     c.num_cpu_cores = 6;
-    c.gpu_load_path = "/sys/devices/platform/bus@0/17000000.gpu/load";
-    c.emc_actmon_path = "/sys/kernel/debug/cactmon/mc_all";
+    c.gpu_load_path     = "/sys/devices/platform/bus@0/17000000.gpu/load";
+    c.emc_actmon_path   = "/sys/kernel/debug/cactmon/mc_all";
+    c.emc_clk_rate_path = "/sys/kernel/debug/clk/emc/clk_rate";
 
     // INA3221 @ 0x40 — verify hwmon number on your device!
     const std::string h0 =
@@ -482,7 +491,9 @@ python -c "from fastnvmetrics import detect_board; b = detect_board(); print(b.b
 | INA3221 labels | `/sys/bus/i2c/drivers/ina3221/<addr>/hwmon/hwmon<N>/curr<C>_label` | String |
 | Thermal zones | `/sys/class/thermal/thermal_zone<N>/temp` | Integer (millideg C) |
 | Thermal names | `/sys/class/thermal/thermal_zone<N>/type` | String |
-| EMC utilization | `/sys/kernel/debug/cactmon/mc_all` | Integer (needs root/setup) |
+| EMC activity count | `/sys/kernel/debug/cactmon/mc_all` | Integer (needs root/setup) |
+| EMC sample period | `/sys/kernel/debug/cactmon/sample_period_usec` | Integer (microseconds) |
+| EMC clock rate | `/sys/kernel/debug/clk/emc/clk_rate` | Integer (Hz, varies with DVFS) |
 
 ---
 

@@ -26,6 +26,18 @@ static bool have_jetson() {
             GTEST_SKIP() << "Not running on a recognized Jetson"; \
     } while (0)
 
+static bool have_emc() {
+    if (!have_jetson()) return false;
+    auto cfg = detect_board();
+    return !cfg.emc_actmon_path.empty() && !cfg.emc_clk_rate_path.empty();
+}
+
+#define SKIP_IF_NO_EMC()                                              \
+    do {                                                              \
+        if (!have_emc())                                              \
+            GTEST_SKIP() << "EMC debugfs not accessible";             \
+    } while (0)
+
 // ── Struct layout tests ────────────────────────────────────────────
 
 TEST(StructLayout, FileHeader) { EXPECT_EQ(sizeof(FileHeader), 728); }
@@ -131,6 +143,7 @@ TEST(BoardConfig, PathsNonEmpty) {
         auto cfg = get_board_config(name);
         EXPECT_FALSE(cfg.gpu_load_path.empty()) << name;
         EXPECT_FALSE(cfg.emc_actmon_path.empty()) << name;
+        EXPECT_FALSE(cfg.emc_clk_rate_path.empty()) << name;
         for (const auto &r : cfg.power_rails) {
             EXPECT_FALSE(r.voltage_path.empty()) << name << " " << r.label;
             EXPECT_FALSE(r.current_path.empty()) << name << " " << r.label;
@@ -138,6 +151,17 @@ TEST(BoardConfig, PathsNonEmpty) {
         for (const auto &z : cfg.thermal_zones) {
             EXPECT_FALSE(z.temp_path.empty()) << name << " " << z.name;
         }
+    }
+}
+
+TEST(BoardConfig, EmcClkRatePathSet) {
+    // Both pre-baked configs must have emc_clk_rate_path set.
+    // This catches the bug where emc_actmon_path was set but the
+    // clock rate path (needed for utilization computation) was missing.
+    for (const auto &name : {"agx_orin", "orin_nx"}) {
+        auto cfg = get_board_config(name);
+        EXPECT_FALSE(cfg.emc_clk_rate_path.empty())
+            << name << ": emc_clk_rate_path not set";
     }
 }
 
@@ -418,4 +442,80 @@ TEST(TraceFile, FastSampleTimestampsMonotonic) {
             << " (" << s.time_s << " <= " << prev_time << ")";
         prev_time = s.time_s;
     }
+}
+
+// ── EMC utilization tests ─────────────────────────────────────────
+
+TEST(TraceFile, EmcAvailableInHeader) {
+    SKIP_IF_NO_EMC();
+    auto cfg = detect_board();
+    const char *path = "/tmp/fastnvmetrics_test_emc_hdr.bin";
+
+    {
+        Engine e(path, cfg);
+        e.start();
+        e.wait_for_warmup();
+        struct timespec req = {0, 100'000'000};  // 100 ms
+        clock_nanosleep(CLOCK_MONOTONIC, 0, &req, nullptr);
+        e.stop();
+    }
+
+    std::ifstream f(path, std::ios::binary);
+    FileHeader hdr{};
+    f.read(reinterpret_cast<char *>(&hdr), sizeof(hdr));
+    ASSERT_TRUE(f.good());
+
+    EXPECT_EQ(hdr.emc_available, 1)
+        << "emc_available should be 1 when debugfs paths are accessible";
+}
+
+TEST(TraceFile, EmcUtilRange) {
+    SKIP_IF_NO_EMC();
+    auto cfg = detect_board();
+    const char *path = "/tmp/fastnvmetrics_test_emc_range.bin";
+
+    {
+        Engine e(path, cfg);
+        e.start();
+        e.wait_for_warmup();
+        struct timespec req = {0, 200'000'000};  // 200 ms
+        clock_nanosleep(CLOCK_MONOTONIC, 0, &req, nullptr);
+        e.stop();
+    }
+
+    std::ifstream f(path, std::ios::binary);
+    FileHeader hdr{};
+    f.read(reinterpret_cast<char *>(&hdr), sizeof(hdr));
+    ASSERT_TRUE(f.good());
+    ASSERT_GT(hdr.num_fast_samples, 50);
+
+    int n_negative = 0;
+    int n_saturated = 0;
+    for (uint64_t i = 0; i < hdr.num_fast_samples; ++i) {
+        FastSample s{};
+        f.read(reinterpret_cast<char *>(&s), sizeof(s));
+        ASSERT_TRUE(f.good()) << "Failed to read sample " << i;
+
+        // Every sample must be in [0, 100], never -1 (N/A sentinel)
+        EXPECT_GE(s.emc_util, 0.0f)
+            << "Sample " << i << ": emc_util = " << s.emc_util
+            << " (lseek on debugfs likely failed with ESPIPE)";
+        EXPECT_LE(s.emc_util, 100.0f)
+            << "Sample " << i << ": emc_util = " << s.emc_util;
+
+        if (s.emc_util < 0.0f) ++n_negative;
+        if (s.emc_util >= 99.0f) ++n_saturated;
+    }
+
+    // No samples should be the -1.0 sentinel
+    EXPECT_EQ(n_negative, 0)
+        << n_negative << " samples returned -1.0 (debugfs read failure)";
+
+    // Not all samples should be saturated at 100%
+    // (catches mc_all-as-percentage parsing bug)
+    double pct_saturated = 100.0 * n_saturated / hdr.num_fast_samples;
+    EXPECT_LT(pct_saturated, 50.0)
+        << pct_saturated << "% of samples >= 99% — "
+        << "mc_all likely parsed as raw integer instead of computing "
+        << "mc_all / (clk_rate * sample_period) * 100";
 }

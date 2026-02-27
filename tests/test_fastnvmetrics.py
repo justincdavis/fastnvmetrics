@@ -38,6 +38,24 @@ def short_trace(tmp_bin: Path) -> Path:
     return tmp_bin
 
 
+@pytest.fixture
+def emc_available() -> bool:
+    """Check if EMC debugfs paths are accessible on this system."""
+    cfg = detect_board()
+    return bool(cfg.emc_actmon_path and cfg.emc_clk_rate_path)
+
+
+@pytest.fixture
+def emc_trace(tmp_path: Path, emc_available: bool) -> Path:
+    """Record a 300 ms trace and return the path. Skips if EMC unavailable."""
+    if not emc_available:
+        pytest.skip("EMC debugfs not accessible (run setup_fastnvmetrics.sh)")
+    p = tmp_path / "emc_trace.bin"
+    with NVMetrics(str(p)) as ft:
+        time.sleep(0.3)
+    return p
+
+
 # ── Board config tests ──────────────────────────────────────────────
 
 
@@ -410,3 +428,88 @@ class TestEdgeCases:
             time.sleep(0.05)
         data = read_trace(tmp_bin)
         assert np.all(data["sync_id"] == 0)
+
+
+# ── EMC (memory controller) utilization tests ──────────────────────
+
+
+class TestEMC:
+    """Tests for EMC utilization sampling.
+
+    These require debugfs access (run scripts/setup_fastnvmetrics.sh).
+    All tests skip gracefully if EMC paths are not available.
+    """
+
+    def test_emc_config_paths(self, emc_available: bool) -> None:
+        """Both EMC paths should be set in detected board config."""
+        if not emc_available:
+            pytest.skip("EMC debugfs not accessible")
+        cfg = detect_board()
+        assert cfg.emc_actmon_path, "emc_actmon_path empty after validation"
+        assert cfg.emc_clk_rate_path, "emc_clk_rate_path empty after validation"
+
+    def test_emc_config_paths_prebaked(self) -> None:
+        """Pre-baked configs should have both EMC paths before validation."""
+        for name in ("agx_orin", "orin_nx"):
+            cfg = get_board_config(name)
+            assert cfg.emc_actmon_path, f"{name}: emc_actmon_path not set"
+            assert cfg.emc_clk_rate_path, f"{name}: emc_clk_rate_path not set"
+
+    def test_emc_available_in_trace(self, emc_trace: Path) -> None:
+        """Trace header should report emc_available=True."""
+        data = read_trace(emc_trace)
+        assert data["emc_available"] is True, (
+            "emc_available is False — EMC fd failed to open or sample_period "
+            "not read. Check debugfs permissions and cactmon module."
+        )
+
+    def test_emc_util_not_negative(self, emc_trace: Path) -> None:
+        """No emc_util sample should be -1.0 (the N/A sentinel).
+
+        This catches the original bug: sysfs_read() uses lseek+read which
+        returns ESPIPE on debugfs, causing read_emc() to return -1.0.
+        """
+        data = read_trace(emc_trace)
+        emc = data["emc_util"]
+        n_negative = int(np.sum(emc < 0))
+        assert n_negative == 0, (
+            f"{n_negative}/{len(emc)} samples are -1.0 — debugfs read failing. "
+            f"Likely cause: lseek on debugfs returns ESPIPE."
+        )
+
+    def test_emc_util_range(self, emc_trace: Path) -> None:
+        """All emc_util values should be in [0.0, 100.0]."""
+        data = read_trace(emc_trace)
+        emc = data["emc_util"]
+        assert np.all(emc >= 0.0), f"emc_util min = {emc.min()}"
+        assert np.all(emc <= 100.0), f"emc_util max = {emc.max()}"
+
+    def test_emc_util_not_saturated(self, emc_trace: Path) -> None:
+        """EMC should NOT be pegged at 100% for every sample.
+
+        This catches the original parsing bug: mc_all returns a raw activity
+        counter (~14000), not a percentage. atoi("14000") clamped to 100.0
+        means every sample reads as 100% utilization.
+        """
+        data = read_trace(emc_trace)
+        emc = data["emc_util"]
+        pct_saturated = np.mean(emc >= 99.0) * 100
+        assert pct_saturated < 50.0, (
+            f"{pct_saturated:.0f}% of samples >= 99% — likely parsing mc_all "
+            f"as a raw integer instead of computing "
+            f"mc_all / (clk_rate * sample_period) * 100"
+        )
+
+    def test_emc_util_varies(self, emc_trace: Path) -> None:
+        """EMC utilization should show some variation across a 300 ms trace.
+
+        A constant value (all identical) suggests the read is returning a
+        stale or hardcoded value rather than live hardware data.
+        """
+        data = read_trace(emc_trace)
+        emc = data["emc_util"]
+        n_unique = len(np.unique(emc))
+        assert n_unique > 1, (
+            f"All {len(emc)} emc_util samples are identical ({emc[0]:.4f}) — "
+            f"not reading live hardware data"
+        )

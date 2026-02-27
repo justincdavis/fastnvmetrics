@@ -110,7 +110,8 @@ struct BoardConfig {
     std::string board_name;   // e.g. "agx_orin"
     int num_cpu_cores;
     std::string gpu_load_path;
-    std::string emc_actmon_path; // debugfs, empty if unavailable
+    std::string emc_actmon_path;   // debugfs cactmon/mc_all, empty if unavailable
+    std::string emc_clk_rate_path; // debugfs clk/emc/clk_rate, empty if unavailable
     std::vector<PowerRailConfig> power_rails;
     std::vector<ThermalZoneConfig> thermal_zones;
 };
@@ -204,10 +205,10 @@ private:
     double t0_s_ = 0.0;
 
     // File descriptors (opened once, reused via lseek)
-    int fd_gpu_load_ = -1;
+    int fd_gpu_load_  = -1;
     int fd_proc_stat_ = -1;
     int fd_meminfo_   = -1;
-    int fd_emc_       = -1;
+    double emc_sample_period_s_ = 0.0; // cactmon sample period (seconds)
     std::vector<int> fd_voltage_;
     std::vector<int> fd_current_;
     std::vector<int> fd_thermal_;

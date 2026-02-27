@@ -45,7 +45,8 @@ static BoardConfig make_agx_orin() {
     c.board_name    = "agx_orin";
     c.num_cpu_cores = 12;
     c.gpu_load_path = "/sys/devices/platform/bus@0/17000000.gpu/load";
-    c.emc_actmon_path = "/sys/kernel/debug/cactmon/mc_all";
+    c.emc_actmon_path   = "/sys/kernel/debug/cactmon/mc_all";
+    c.emc_clk_rate_path = "/sys/kernel/debug/clk/emc/clk_rate";
 
     // INA3221 @ 0x40 (hwmon3)
     const std::string h0 =
@@ -83,7 +84,8 @@ static BoardConfig make_orin_nx() {
     c.board_name    = "orin_nx";
     c.num_cpu_cores = 8;
     c.gpu_load_path = "/sys/devices/platform/bus@0/17000000.gpu/load";
-    c.emc_actmon_path = "/sys/kernel/debug/cactmon/mc_all";
+    c.emc_actmon_path   = "/sys/kernel/debug/cactmon/mc_all";
+    c.emc_clk_rate_path = "/sys/kernel/debug/clk/emc/clk_rate";
 
     // INA3221 @ 0x40 — rail labels may differ on NX carrier boards.
     // These are defaults for the NVIDIA devkit carrier (P3768).
@@ -131,6 +133,7 @@ static void validate_config(BoardConfig &c) {
 
     // EMC (debugfs — may require setup script)
     if (!path_readable(c.emc_actmon_path)) c.emc_actmon_path.clear();
+    if (!path_readable(c.emc_clk_rate_path)) c.emc_clk_rate_path.clear();
 
     // Power rails — keep only readable ones
     c.power_rails.erase(

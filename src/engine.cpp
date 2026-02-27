@@ -39,6 +39,19 @@ static int sysfs_read_int(int fd) {
     return atoi(buf);
 }
 
+/// Read a small debugfs file via open+read+close (debugfs doesn't support lseek).
+/// Returns number of bytes read, or 0 on error.
+static ssize_t debugfs_read(const std::string &path, char *buf, size_t bufsize) {
+    if (path.empty()) return 0;
+    int fd = open(path.c_str(), O_RDONLY);
+    if (fd < 0) return 0;
+    ssize_t n = read(fd, buf, bufsize - 1);
+    close(fd);
+    if (n <= 0) return 0;
+    buf[n] = '\0';
+    return n;
+}
+
 /// Advance pointer past the next occurrence of target char, or return nullptr.
 static const char *skip_past(const char *p, char c) {
     while (*p && *p != c) ++p;
@@ -263,14 +276,23 @@ void Engine::read_ram(uint64_t &used_kb, uint64_t &available_kb) {
 }
 
 float Engine::read_emc() {
-    if (fd_emc_ < 0) return -1.0f;
+    if (emc_sample_period_s_ <= 0.0) return -1.0f;
 
-    // cactmon/mc_all format is TBD — try reading as an integer percentage
+    // Read raw activity count from cactmon/mc_all (debugfs: open+read+close)
     char buf[64];
-    if (sysfs_read(fd_emc_, buf, sizeof(buf)) <= 0) return -1.0f;
+    if (debugfs_read(board_.emc_actmon_path, buf, sizeof(buf)) <= 0) return -1.0f;
+    double mc_all = atof(buf);
 
-    int v = atoi(buf);
-    return std::clamp(static_cast<float>(v), 0.0f, 100.0f);
+    // Read current EMC clock rate (varies with DVFS)
+    char rbuf[32];
+    if (debugfs_read(board_.emc_clk_rate_path, rbuf, sizeof(rbuf)) <= 0)
+        return -1.0f;
+    double clk_rate = atof(rbuf);
+    if (clk_rate <= 0.0) return -1.0f;
+
+    double max_ticks = clk_rate * emc_sample_period_s_;
+    float util = static_cast<float>(mc_all / max_ticks * 100.0);
+    return std::clamp(util, 0.0f, 100.0f);
 }
 
 void Engine::read_power(uint32_t *voltage, uint32_t *current, float *power) {
@@ -406,7 +428,20 @@ void Engine::open_fds() {
     fd_gpu_load_  = try_open(board_.gpu_load_path);
     fd_proc_stat_ = try_open("/proc/stat");
     fd_meminfo_   = try_open("/proc/meminfo");
-    fd_emc_       = try_open(board_.emc_actmon_path);
+
+    // EMC uses debugfs which doesn't support lseek — read sample period once
+    // via open+read+close. Derive path from emc_actmon_path directory.
+    emc_sample_period_s_ = 0.0;
+    if (!board_.emc_actmon_path.empty() && !board_.emc_clk_rate_path.empty()) {
+        auto pos = board_.emc_actmon_path.rfind('/');
+        if (pos != std::string::npos) {
+            std::string sp_path =
+                board_.emc_actmon_path.substr(0, pos + 1) + "sample_period_usec";
+            char buf[32];
+            if (debugfs_read(sp_path, buf, sizeof(buf)) > 0)
+                emc_sample_period_s_ = atoi(buf) / 1.0e6;
+        }
+    }
 
     for (const auto &r : board_.power_rails) {
         fd_voltage_.push_back(try_open(r.voltage_path));
@@ -425,7 +460,6 @@ void Engine::close_fds() {
     try_close(fd_gpu_load_);
     try_close(fd_proc_stat_);
     try_close(fd_meminfo_);
-    try_close(fd_emc_);
 
     for (auto &fd : fd_voltage_) try_close(fd);
     for (auto &fd : fd_current_) try_close(fd);
@@ -449,7 +483,7 @@ void Engine::write_file() {
     hdr.num_cpu_cores     = static_cast<uint8_t>(board_.num_cpu_cores);
     hdr.num_power_rails   = static_cast<uint8_t>(board_.power_rails.size());
     hdr.num_thermal_zones = static_cast<uint8_t>(board_.thermal_zones.size());
-    hdr.emc_available     = (fd_emc_ >= 0) ? 1 : 0;
+    hdr.emc_available     = (emc_sample_period_s_ > 0.0) ? 1 : 0;
     hdr.fast_hz           = config_.fast_hz;
     hdr.medium_hz         = config_.medium_hz;
     hdr.slow_hz           = config_.slow_hz;
